@@ -3,261 +3,1364 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>성장 발달 탐험대 - Cloud</title>
+    <title>올바른 성장 발달 탐험대</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Jua&family=Noto+Sans+KR:wght@400;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Jua&family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    
-    <!-- Firebase SDK -->
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+    <style>
+        body {
+            font-family: 'Jua', sans-serif;
+            background-color: #f0fdf4; /* green-50 */
+            user-select: none;
+            touch-action: manipulation;
+        }
+        
+        .font-sans { font-family: 'Noto Sans KR', sans-serif; }
 
-        // Firebase Configuration (Environment Variables)
-        const firebaseConfig = JSON.parse(__firebase_config);
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'growth-explorer-app';
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #f1f1f1; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb { background: #86efac; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #4ade80; }
 
-        // Global State
-        let currentUser = null;
-        let myChart = null;
+        @keyframes pop {
+            0% { transform: scale(0.9); opacity: 0; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+        .animate-pop { animation: pop 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
 
-        // UI Elements
-        const views = {
-            intro: document.getElementById('view-intro'),
-            step1: document.getElementById('view-step1'),
-            step2: document.getElementById('view-step2'),
-            result: document.getElementById('view-result'),
-            loading: document.getElementById('view-loading')
-        };
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-5px); }
+            75% { transform: translateX(5px); }
+        }
+        .shake { animation: shake 0.3s ease-in-out; }
 
-        const nav = document.getElementById('main-nav');
-
-        function showView(targetId) {
-            Object.keys(views).forEach(id => {
-                views[id].classList.add('hidden');
-            });
-            views[targetId].classList.remove('hidden');
+        .draggable {
+            cursor: grab;
+            transition: transform 0.1s, box-shadow 0.1s;
+            z-index: 50;
+        }
+        .draggable:active { cursor: grabbing; transform: scale(1.05); }
+        .dropzone {
+            transition: all 0.2s;
+            border: 2px dashed #9ca3af;
+        }
+        .dropzone.drag-over {
+            background-color: #dcfce7;
+            border-color: #22c55e;
+            transform: scale(1.05);
         }
 
-        // 1. Authentication (RULE 3)
-        const initAuth = async () => {
-            try {
-                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                    await signInWithCustomToken(auth, __initial_auth_token);
-                } else {
-                    await signInAnonymously(auth);
-                }
-            } catch (error) {
-                console.error("Auth Error:", error);
-            }
-        };
+        input[type="text"], input[type="password"], input[type="date"], select, textarea {
+            font-family: 'Noto Sans KR', sans-serif;
+        }
+        
+        .table-wrapper {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+    </style>
+</head>
+<body class="h-screen w-full flex flex-col items-center p-2 md:p-4 overflow-hidden">
 
-        onAuthStateChanged(auth, (user) => {
-            if (user) {
-                currentUser = user;
-                loadUserData();
-            } else {
-                showView('intro');
+    <div id="app" class="w-full max-w-6xl h-full bg-white rounded-3xl shadow-xl overflow-hidden flex flex-col border-4 border-green-200 relative">
+        <!-- 관리자 수정 모드 배너 -->
+        <div id="admin-banner" class="hidden shrink-0 w-full bg-red-500 text-white text-center py-2 font-bold cursor-pointer hover:bg-red-600 transition" onclick="exitAdminEdit()">
+            <!-- JS 렌더링 -->
+        </div>
+        <div id="nav-container" class="hidden shrink-0 w-full bg-green-50 border-b-2 border-green-100 p-2"></div>
+        <main id="content-area" class="flex-grow w-full relative overflow-y-auto bg-white p-4 md:p-6"></main>
+    </div>
+
+    <!-- 범용 모달 (성장 그라운드 등) -->
+    <div id="modal-container" class="hidden absolute inset-0 z-50 flex items-center justify-center bg-black/50 p-4"></div>
+
+    <!-- 커스텀 알림/입력창 (iframe 환경 제한 우회용) -->
+    <div id="custom-modal-root" class="hidden absolute inset-0 z-[100] flex items-center justify-center bg-black/60 p-4"></div>
+
+    <script>
+        // --- 0. 커스텀 팝업 시스템 (alert, confirm, prompt 대체) ---
+        function showCustomModal(options) {
+            const root = document.getElementById('custom-modal-root');
+            
+            // 변경됨: max-w-sm을 max-w-lg(가로폭 늘림)로 변경하고 단어 단위 줄바꿈(break-keep) 추가
+            let innerHtml = `
+                <div class="bg-white rounded-3xl p-6 max-w-lg w-full mx-4 shadow-2xl animate-pop text-center relative font-sans flex flex-col">
+                    <h3 class="text-xl font-bold text-gray-800 mb-6 whitespace-pre-line break-keep leading-relaxed">${options.message}</h3>
+            `;
+
+            if (options.type === 'prompt') {
+                innerHtml += `
+                    <input type="${options.inputType || 'text'}" id="custom-modal-input" 
+                           class="w-full p-4 border-2 border-gray-300 rounded-xl focus:border-green-500 outline-none mb-6 text-center text-lg font-bold" 
+                           ${options.maxLength ? `maxlength="${options.maxLength}"` : ''} 
+                           placeholder="${options.placeholder || ''}" autocomplete="off">
+                `;
             }
+
+            innerHtml += `<div class="flex justify-center gap-3 w-full">`;
+            
+            if (options.type === 'confirm' || options.type === 'prompt') {
+                innerHtml += `<button id="custom-modal-cancel" class="flex-1 py-3 bg-gray-200 text-gray-700 rounded-xl font-bold hover:bg-gray-300 transition text-lg">취소</button>`;
+            }
+            
+            innerHtml += `<button id="custom-modal-ok" class="flex-1 py-3 bg-green-500 text-white rounded-xl font-bold hover:bg-green-600 transition text-lg">확인</button>`;
+            innerHtml += `</div></div>`;
+            
+            root.innerHTML = innerHtml;
+            root.classList.remove('hidden');
+
+            if (options.type === 'prompt') {
+                setTimeout(() => document.getElementById('custom-modal-input').focus(), 100);
+            }
+
+            document.getElementById('custom-modal-ok').onclick = () => {
+                let val = null;
+                if (options.type === 'prompt') {
+                    val = document.getElementById('custom-modal-input').value;
+                }
+                root.classList.add('hidden');
+                if (options.onConfirm) options.onConfirm(val);
+            };
+
+            if (options.type === 'confirm' || options.type === 'prompt') {
+                document.getElementById('custom-modal-cancel').onclick = () => {
+                    root.classList.add('hidden');
+                };
+            }
+        }
+
+        function customAlert(message, onConfirm = null) {
+            showCustomModal({ type: 'alert', message, onConfirm });
+        }
+
+        function customConfirm(message, onConfirm) {
+            showCustomModal({ type: 'confirm', message, onConfirm });
+        }
+
+        function customPrompt(message, onConfirm, placeholder = '', inputType = 'text', maxLength = null) {
+            showCustomModal({ type: 'prompt', message, onConfirm, placeholder, inputType, maxLength });
+        }
+
+        // 기본 데이터 구조 팩토리 함수
+        const getDefaultStep1 = () => ({ scores: {q1:0,q2:0,q3:0,q4:0,q5:0,q6:0,q7:0,q8:0}, targetArea: '', isSubmitted: false });
+        const getDefaultStep2 = () => ({
+            goals: [''], 
+            infos: [
+                { source: '인터넷 자료', content: '줄넘기를 하는 것도 도움이 되는 구나', isDefault: true },
+                { source: '선생님', content: '자세를 올바르게 유지하고 일찍 잠드는 습관을 가지면 키가 클 수 있단다.', isDefault: true }
+            ],
+            plans: [
+                { date: '2026-03-11', day: '수', ampm: 'PM', time: '8', content: '줄넘기', checked: false, isDefault: true },
+                { date: '', day: '', ampm: 'AM', time: '1', content: '', checked: false, isDefault: false },
+                { date: '', day: '', ampm: 'AM', time: '1', content: '', checked: false, isDefault: false },
+                { date: '', day: '', ampm: 'AM', time: '1', content: '', checked: false, isDefault: false },
+                { date: '', day: '', ampm: 'AM', time: '1', content: '', checked: false, isDefault: false },
+                { date: '', day: '', ampm: 'AM', time: '1', content: '', checked: false, isDefault: false },
+                { date: '', day: '', ampm: 'AM', time: '1', content: '', checked: false, isDefault: false }
+            ],
+            reflects: [
+                { content: '평일은 잘 실천했는데, 주말에는 줄넘기를 하지 않고 늦게 잤어.', isDefault: true },
+                { content: '줄넘기를 한 후에 스마트폰을 하지 말고 일찍 잠자리에 들자.', isDefault: true }
+            ],
+            isSaved: false
         });
 
-        // 2. Data Operations (RULE 1 & 2)
-        async function loadUserData() {
-            if (!currentUser) return;
-            
-            const userDocRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'profile', 'data');
-            const docSnap = await getDoc(userDocRef);
+        // 가상의 데이터베이스 (회원 관리)
+        let db = {
+            users: []
+        };
 
-            if (docSnap.exists()) {
-                const data = docSnap.data();
-                document.getElementById('display-name').innerText = data.name || "대원";
-                document.getElementById('goal-text').value = data.goal || "";
-                
-                // If data exists, show result directly or step1
-                if (data.completed) {
-                    renderResult(data);
-                } else {
-                    showView('intro');
+        // --- 1. 앱 전역 상태 관리 ---
+        let state = {
+            currentTab: 'intro', 
+            loginMode: 'user', // 'user' or 'admin'
+            loginInput: { nickname: '', password: '' },
+            introMatches: { word1: false, word2: false },
+            
+            activeUserId: null,
+            isAdminLoggedIn: false,
+            isAdminEditing: false,
+
+            step1: getDefaultStep1(),
+            step2: getDefaultStep2()
+        };
+
+        const navContainer = document.getElementById('nav-container');
+        const adminBanner = document.getElementById('admin-banner');
+        const contentArea = document.getElementById('content-area');
+        const modalContainer = document.getElementById('modal-container');
+        let radarChartInstance = null;
+
+        // DB와 State 동기화 함수
+        function syncDbToState(userId) {
+            const user = db.users.find(u => u.id === userId);
+            if(user) {
+                state.step1 = JSON.parse(JSON.stringify(user.step1));
+                state.step2 = JSON.parse(JSON.stringify(user.step2));
+            }
+        }
+        function syncStateToDb() {
+            if(state.activeUserId) {
+                const user = db.users.find(u => u.id === state.activeUserId);
+                if(user) {
+                    user.step1 = JSON.parse(JSON.stringify(state.step1));
+                    user.step2 = JSON.parse(JSON.stringify(state.step2));
                 }
-            } else {
-                showView('intro');
             }
         }
 
-        async function saveProgress(stepData) {
-            if (!currentUser) return;
-            const userDocRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'profile', 'data');
-            await setDoc(userDocRef, {
-                ...stepData,
-                updatedAt: new Date().toISOString()
-            }, { merge: true });
+        // 공통 유효성 검사 함수 (탐험 완료 검증용)
+        function checkCompletion() {
+            let isValid = true;
+            let missingMsg = [];
+
+            if (!state.step1.isSubmitted) { isValid = false; missingMsg.push("1단계: 점검표 제출"); }
+            if (!state.step1.targetArea) { isValid = false; missingMsg.push("1단계: 개선 영역 선택"); }
+            
+            const emptyGoals = state.step2.goals.filter(g => g.trim() === '');
+            if (emptyGoals.length > 0 || state.step2.goals.length === 0) { isValid = false; missingMsg.push("2단계: 목표 정하기 (빈칸 없이 작성)"); }
+            
+            const validInfos = state.step2.infos.filter(info => info.content.trim() !== '' && !info.isDefault);
+            if (validInfos.length === 0) { isValid = false; missingMsg.push("2단계: 정보 탐색 (최소 1개 작성)"); }
+
+            const validPlans = state.step2.plans.filter(p => p.date !== '' && p.content.trim() !== '' && !p.isDefault);
+            if (validPlans.length === 0) { isValid = false; missingMsg.push("2단계: 계획하고 실천하기 (최소 1개 작성)"); }
+
+            const validReflects = state.step2.reflects.filter(r => r.content.trim() !== '' && !r.isDefault);
+            if (validReflects.length === 0) { isValid = false; missingMsg.push("2단계: 평가 및 반영 (최소 1개 작성)"); }
+
+            return { isValid, missingMsg };
         }
 
-        // App Logic
-        window.startExploration = async () => {
-            const name = document.getElementById('user-name').value;
-            if (!name) return alert("이름을 입력해주세요!");
-            
-            await saveProgress({ name: name, completed: false });
-            nav.classList.remove('hidden');
-            document.getElementById('display-name').innerText = name;
-            showView('step1');
-            initChart();
-        };
+        // --- 2. 라우터 및 네비게이션 ---
+        function setTab(tabId) {
+            if (dragGhost) { dragGhost.remove(); dragGhost = null; }
+            document.querySelectorAll('.draggable-ghost').forEach(el => el.remove());
+            dragItem = null;
 
-        function initChart() {
-            const ctx = document.getElementById('growthChart').getContext('2d');
-            if (myChart) myChart.destroy();
-            myChart = new Chart(ctx, {
+            state.currentTab = tabId;
+            renderNav();
+            renderContent();
+            
+            contentArea.scrollTop = 0;
+        }
+
+        function renderNav() {
+            if (state.currentTab === 'intro') {
+                navContainer.classList.add('hidden');
+                adminBanner.classList.add('hidden');
+                return;
+            }
+
+            if (state.isAdminEditing && state.activeUserId) {
+                const user = db.users.find(u => u.id === state.activeUserId);
+                adminBanner.innerHTML = `🔧 <b>[관리자 모드]</b> ${user.nickname} 학생의 활동을 보고 수정 중입니다. (클릭하여 관리자 대시보드로 복귀)`;
+                adminBanner.classList.remove('hidden');
+            } else {
+                adminBanner.classList.add('hidden');
+            }
+
+            navContainer.classList.remove('hidden');
+
+            let navHtml = `<div class="flex flex-wrap items-center justify-between w-full max-w-5xl mx-auto gap-2"><div class="flex gap-2">`;
+            
+            if (state.isAdminLoggedIn && !state.isAdminEditing) {
+                const isActive = state.currentTab === 'admin';
+                navHtml += `<button onclick="setTab('admin')" class="px-4 py-2 rounded-t-lg font-bold transition-colors ${isActive ? 'bg-blue-600 text-white' : 'bg-blue-200 text-blue-800 hover:bg-blue-300'}">관리자 대시보드</button>`;
+            } else {
+                const user = db.users.find(u => u.id === state.activeUserId);
+                const isApproved = user && user.status === 'approved';
+
+                const tabs = [
+                    { id: 'step1', label: '1단계: 점검하기' },
+                    { id: 'step2', label: '2단계: 계획 및 실천' },
+                    { id: 'step3', label: '3단계: 탐험 완료' }
+                ];
+                tabs.forEach(tab => {
+                    const isActive = state.currentTab === tab.id;
+                    if (tab.id === 'step3') {
+                        if (!isApproved && !state.isAdminEditing) {
+                            navHtml += `<button onclick="customAlert('이전 단계를 모두 완료하고 선생님의 심사 승인을 받아야 접근할 수 있습니다.')" class="px-4 py-2 rounded-t-lg font-bold transition-colors bg-gray-200 text-gray-400 cursor-not-allowed">${tab.label}</button>`;
+                        } else {
+                            navHtml += `<button onclick="setTab('${tab.id}')" class="px-4 py-2 rounded-t-lg font-bold transition-colors ${isActive ? 'bg-green-500 text-white' : 'bg-green-200 text-green-800 hover:bg-green-300'}">${tab.label}</button>`;
+                        }
+                    } else {
+                        navHtml += `<button onclick="setTab('${tab.id}')" class="px-4 py-2 rounded-t-lg font-bold transition-colors ${isActive ? 'bg-green-500 text-white' : 'bg-green-200 text-green-800 hover:bg-green-300'}">${tab.label}</button>`;
+                    }
+                });
+            }
+
+            const isGroundActive = state.currentTab === 'ground';
+            navHtml += `</div><div class="flex gap-2 items-center">`;
+            
+            if (!state.isAdminLoggedIn || state.isAdminEditing) {
+                const user = db.users.find(u => u.id === state.activeUserId);
+                const unreadCount = user && user.messages ? user.messages.filter(m => !m.isRead).length : 0;
+                
+                navHtml += `
+                    <button onclick="openMessageModal()" class="relative px-3 py-2 rounded-lg font-bold transition-colors shadow-sm bg-white border border-gray-200 hover:bg-gray-50 flex items-center gap-1 text-sm md:text-base">
+                        💌 메시지
+                        ${unreadCount > 0 ? `<span class="absolute -top-2 -right-2 bg-red-500 text-white text-[10px] rounded-full w-5 h-5 flex items-center justify-center animate-bounce shadow-md">${unreadCount}</span>` : ''}
+                    </button>
+                `;
+            }
+
+            navHtml += `
+                <button onclick="setTab('ground')" class="px-3 py-2 md:px-4 rounded-lg font-bold transition-colors shadow-sm flex items-center gap-1 text-sm md:text-base ${isGroundActive ? 'bg-yellow-500 text-white' : 'bg-yellow-300 text-yellow-900 hover:bg-yellow-400'}">
+                    🌟 성장 그라운드
+                </button>
+                <button onclick="logoutUser()" class="px-3 py-2 md:px-4 rounded-lg font-bold transition-colors shadow-sm bg-gray-200 text-gray-700 hover:bg-gray-300 text-sm md:text-base">
+                    로그아웃
+                </button>
+            </div></div>`;
+            navContainer.innerHTML = navHtml;
+        }
+
+        function renderContent() {
+            contentArea.innerHTML = '';
+            if(radarChartInstance) { radarChartInstance.destroy(); radarChartInstance = null; }
+
+            switch(state.currentTab) {
+                case 'intro': renderIntro(); break;
+                case 'admin': renderAdmin(); break;
+                case 'step1': renderStep1(); break;
+                case 'step2': renderStep2(); break;
+                case 'step3': renderStep3(); break;
+                case 'ground': renderGround(); break;
+            }
+        }
+
+        function logoutUser() {
+            state.activeUserId = null;
+            state.isAdminLoggedIn = false;
+            state.isAdminEditing = false;
+            state.loginInput = { nickname: '', password: '' };
+            state.introMatches = { word1: false, word2: false };
+            setTab('intro');
+        }
+
+        function setLoginMode(mode) {
+            state.loginMode = mode;
+            state.loginInput = { nickname: '', password: '' };
+            renderIntro();
+        }
+
+        // --- 3. 인트로: 로그인 및 심사 ---
+        let dragItem = null, dragGhost = null, dragOffset = {x:0, y:0};
+
+        function renderIntro() {
+            const isUser = state.loginMode === 'user';
+
+            let contentHtml = `
+                <div class="flex flex-col items-center justify-center h-full text-center animate-pop max-w-3xl mx-auto">
+                    <div class="text-7xl mb-4">🧭</div>
+                    <h1 class="text-4xl font-bold text-green-700 mb-6">올바른 성장 발달 탐험대</h1>
+                    
+                    <div class="flex gap-4 mb-6 bg-gray-100 p-1 rounded-full shadow-inner">
+                        <button onclick="setLoginMode('user')" class="px-8 py-2 rounded-full font-bold transition-all ${isUser ? 'bg-green-500 text-white shadow-md' : 'text-gray-500 hover:bg-gray-200'}">학생</button>
+                        <button onclick="setLoginMode('admin')" class="px-8 py-2 rounded-full font-bold transition-all ${!isUser ? 'bg-blue-500 text-white shadow-md' : 'text-gray-500 hover:bg-gray-200'}">선생님 (관리자)</button>
+                    </div>
+            `;
+
+            if (isUser) {
+                contentHtml += `
+                    <p class="text-lg text-gray-600 mb-6">닉네임과 비밀번호를 입력하고, 빈칸을 완성해 탐험대원이 되세요!</p>
+
+                    <div class="flex flex-col md:flex-row justify-center gap-3 mb-8 w-full font-sans">
+                        <input type="text" placeholder="사용할 닉네임" value="${state.loginInput.nickname}" 
+                               class="p-3 border-2 border-gray-300 rounded-xl focus:border-green-500 focus:outline-none w-full md:w-56 text-center shadow-sm" 
+                               oninput="state.loginInput.nickname = this.value; checkIntroPass();">
+                        <input type="password" placeholder="비밀번호 숫자 4자리" value="${state.loginInput.password}" maxlength="4" 
+                               class="p-3 border-2 border-gray-300 rounded-xl focus:border-green-500 focus:outline-none w-full md:w-56 text-center shadow-sm" 
+                               oninput="state.loginInput.password = this.value; checkIntroPass();">
+                    </div>
+
+                    <div id="user-dnd-area">
+                        <div class="bg-green-50 border-4 border-green-200 rounded-2xl p-8 mb-10 w-full shadow-inner leading-loose text-2xl font-sans font-medium text-gray-800 break-keep">
+                            "발달하고 변화하는 자신을 
+                            <span id="drop1" class="dropzone inline-flex items-center justify-center w-32 h-12 bg-white rounded-lg align-middle mx-2" data-answer="소중히">
+                                ${state.introMatches.word1 ? '<span class="text-green-600 font-bold">소중히</span>' : ''}
+                            </span>
+                            여김과 동시에 다른 친구들을 
+                            <span id="drop2" class="dropzone inline-flex items-center justify-center w-32 h-12 bg-white rounded-lg align-middle mx-2" data-answer="존중">
+                                ${state.introMatches.word2 ? '<span class="text-green-600 font-bold">존중</span>' : ''}
+                            </span>
+                            하는 태도를 가져야 한다."
+                        </div>
+
+                        <div class="flex gap-6 justify-center h-16">
+                            <div id="drag1" class="draggable px-8 py-3 bg-white border-2 border-green-400 rounded-full shadow-md text-xl font-bold text-green-700 select-none ${state.introMatches.word1 ? 'invisible' : ''}" 
+                                 onmousedown="handleDragStart(event, '소중히', 'drag1')" ontouchstart="handleDragStart(event, '소중히', 'drag1')">소중히</div>
+                            <div id="drag2" class="draggable px-8 py-3 bg-white border-2 border-green-400 rounded-full shadow-md text-xl font-bold text-green-700 select-none ${state.introMatches.word2 ? 'invisible' : ''}" 
+                                 onmousedown="handleDragStart(event, '존중', 'drag2')" ontouchstart="handleDragStart(event, '존중', 'drag2')">존중</div>
+                        </div>
+                    </div>
+
+                    <div id="intro-success" class="hidden mt-8 animate-pop">
+                        <div class="text-2xl font-bold text-orange-500 mb-4">🎉 심사 합격! 탐험대원으로 선정되었습니다!</div>
+                        <button onclick="loginAsUser()" class="bg-green-500 hover:bg-green-600 text-white text-xl py-3 px-10 rounded-full shadow-lg transition transform hover:scale-105">
+                            탐험 시작하기
+                        </button>
+                    </div>
+                `;
+            } else {
+                contentHtml += `
+                    <p class="text-lg text-gray-600 mb-8">관리자 계정으로 로그인하세요.</p>
+                    <div class="flex flex-col justify-center items-center gap-3 mb-8 w-full font-sans max-w-sm mx-auto">
+                        <input type="text" placeholder="아이디" value="${state.loginInput.nickname}" 
+                               class="p-3 border-2 border-gray-300 rounded-xl focus:border-blue-500 focus:outline-none w-full text-center shadow-sm" 
+                               oninput="state.loginInput.nickname = this.value;">
+                        <input type="password" placeholder="비밀번호" value="${state.loginInput.password}" 
+                               class="p-3 border-2 border-gray-300 rounded-xl focus:border-blue-500 focus:outline-none w-full text-center shadow-sm" 
+                               oninput="state.loginInput.password = this.value;">
+                        <button onclick="attemptAdminLogin()" class="mt-4 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-10 rounded-xl shadow-lg text-lg animate-pop w-full">
+                            🛡️ 관리자 대시보드 접속
+                        </button>
+                    </div>
+                `;
+            }
+
+            contentHtml += `</div>`;
+            contentArea.innerHTML = contentHtml;
+            if (isUser) checkIntroPass();
+        }
+
+        function checkIntroPass() {
+            if (state.loginMode !== 'user') return;
+
+            const nick = state.loginInput.nickname.trim();
+            const pass = state.loginInput.password.trim();
+            const successMsg = document.getElementById('intro-success');
+
+            const passRegex = /^\d{4}$/; 
+            const isNickValid = nick !== '';
+            const isPassValid = passRegex.test(pass);
+            const isSentenceComplete = state.introMatches.word1 && state.introMatches.word2;
+
+            if (isSentenceComplete && isNickValid && isPassValid) {
+                successMsg.classList.remove('hidden');
+            } else {
+                successMsg.classList.add('hidden');
+            }
+        }
+
+        function attemptAdminLogin() {
+            const nick = state.loginInput.nickname.trim();
+            const pass = state.loginInput.password.trim();
+            if (nick === 'admin' && pass === '2026') {
+                state.isAdminLoggedIn = true;
+                state.isAdminEditing = false;
+                setTab('admin');
+            } else {
+                customAlert('아이디 또는 비밀번호가 올바르지 않습니다.');
+            }
+        }
+
+        function loginAsUser() {
+            const nick = state.loginInput.nickname.trim();
+            const pass = state.loginInput.password.trim();
+            
+            let user = db.users.find(u => u.nickname === nick);
+            if (user) {
+                if (user.password !== pass) {
+                    customAlert("비밀번호가 틀렸습니다!");
+                    return;
+                }
+            } else {
+                const newId = db.users.length > 0 ? Math.max(...db.users.map(u=>u.id)) + 1 : 1;
+                const emojis = ['🐶','🐱','🐭','🐹','🐰','🦊','🐻','🐼','🐨','🐯'];
+                user = {
+                    id: newId, nickname: nick, password: pass, likes: 0, liked: false, 
+                    img: emojis[Math.floor(Math.random() * emojis.length)], isPublished: false,
+                    status: 'draft', 
+                    step1: getDefaultStep1(), step2: getDefaultStep2(), messages: []
+                };
+                db.users.push(user);
+            }
+
+            state.activeUserId = user.id;
+            state.isAdminLoggedIn = false;
+            syncDbToState(user.id);
+            setTab('step1');
+        }
+
+        function handleDragStart(e, word, elementId) {
+            if(state.loginMode !== 'user') return;
+            e.preventDefault();
+            const target = e.currentTarget;
+            dragItem = { el: target, word: word, id: elementId };
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            const rect = target.getBoundingClientRect();
+            dragOffset.x = clientX - rect.left; dragOffset.y = clientY - rect.top;
+            
+            dragGhost = target.cloneNode(true);
+            dragGhost.style.position = 'fixed'; dragGhost.style.left = rect.left + 'px'; dragGhost.style.top = rect.top + 'px';
+            dragGhost.style.width = rect.width + 'px'; dragGhost.style.height = rect.height + 'px';
+            dragGhost.style.zIndex = 9999; dragGhost.style.opacity = 0.8; dragGhost.style.pointerEvents = 'none';
+            dragGhost.classList.add('draggable-ghost'); 
+            document.body.appendChild(dragGhost);
+            
+            target.style.opacity = 0.3;
+            document.addEventListener('mousemove', handleDragMove, {passive: false});
+            document.addEventListener('touchmove', handleDragMove, {passive: false});
+            document.addEventListener('mouseup', handleDragEnd);
+            document.addEventListener('touchend', handleDragEnd);
+        }
+        function handleDragMove(e) {
+            if(!dragGhost) return; e.preventDefault();
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX; const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            dragGhost.style.left = (clientX - dragOffset.x) + 'px'; dragGhost.style.top = (clientY - dragOffset.y) + 'px';
+            dragGhost.style.display = 'none'; const elemBelow = document.elementFromPoint(clientX, clientY); dragGhost.style.display = 'block';
+            document.querySelectorAll('.dropzone').forEach(dz => dz.classList.remove('drag-over'));
+            if(elemBelow) { const dropzone = elemBelow.closest('.dropzone'); if(dropzone) dropzone.classList.add('drag-over'); }
+        }
+        function handleDragEnd(e) {
+            document.removeEventListener('mousemove', handleDragMove); document.removeEventListener('touchmove', handleDragMove);
+            document.removeEventListener('mouseup', handleDragEnd); document.removeEventListener('touchend', handleDragEnd);
+            if(!dragItem) return;
+            const clientX = e.changedTouches ? e.changedTouches[0].clientX : e.clientX; const clientY = e.changedTouches ? e.changedTouches[0].clientY : e.clientY;
+            dragGhost.remove(); dragGhost = null; dragItem.el.style.opacity = 1;
+            dragItem.el.style.display = 'none'; const elemBelow = document.elementFromPoint(clientX, clientY); dragItem.el.style.display = 'flex';
+            if(elemBelow) {
+                const dropzone = elemBelow.closest('.dropzone');
+                if(dropzone) {
+                    if(dropzone.dataset.answer === dragItem.word) {
+                        if(dragItem.word === '소중히') state.introMatches.word1 = true;
+                        if(dragItem.word === '존중') state.introMatches.word2 = true;
+                        dropzone.innerHTML = `<span class="text-green-600 font-bold">${dragItem.word}</span>`;
+                        dragItem.el.classList.add('invisible');
+                        checkIntroPass(); 
+                    } else {
+                        dropzone.classList.add('shake'); setTimeout(() => dropzone.classList.remove('shake'), 400);
+                    }
+                }
+            }
+            dragItem = null;
+        }
+
+        // --- 관리자 대시보드 ---
+        function renderAdmin() {
+            let usersHtml = '';
+            db.users.forEach(u => {
+                let statusBadge = '';
+                if(u.status === 'approved') statusBadge = '<span class="bg-green-100 text-green-700 px-2 py-1 rounded font-bold">승인됨</span>';
+                else if(u.status === 'submitted') statusBadge = '<span class="bg-yellow-100 text-yellow-700 px-2 py-1 rounded font-bold">심사 대기</span>';
+                else statusBadge = '<span class="bg-gray-100 text-gray-500 px-2 py-1 rounded">작성 중</span>';
+
+                usersHtml += `
+                    <tr class="border-b font-sans text-center text-sm md:text-base">
+                        <td class="p-3">${u.id}</td>
+                        <td class="p-3 font-bold">${u.nickname}</td>
+                        <td class="p-3 text-gray-500">${u.password}</td>
+                        <td class="p-3">
+                            <div class="flex flex-col items-center gap-1">
+                                ${statusBadge}
+                                ${u.isPublished ? '<span class="text-blue-500 font-bold text-xs mt-1">(게시됨)</span>' : '<span class="text-gray-400 text-xs mt-1">(미게시)</span>'}
+                            </div>
+                        </td>
+                        <td class="p-3 flex justify-center gap-2 flex-wrap">
+                            ${u.status === 'submitted' ? `<button onclick="adminApprove(${u.id})" class="bg-indigo-500 text-white px-3 py-1 rounded hover:bg-indigo-600 font-bold shadow-sm transition">심사 승인</button>` : ''}
+                            <button onclick="adminEditUser(${u.id})" class="bg-green-500 text-white px-3 py-1 rounded hover:bg-green-600 font-bold shadow-sm transition">활동 보기/수정</button>
+                            <button onclick="adminSendMessage(${u.id})" class="bg-purple-500 text-white px-3 py-1 rounded hover:bg-purple-600 font-bold shadow-sm transition">메시지 보내기</button>
+                            <button onclick="adminResetPw(${u.id})" class="bg-yellow-500 text-white px-3 py-1 rounded hover:bg-yellow-600 font-bold shadow-sm transition">PW 초기화</button>
+                            ${u.isPublished ? `<button onclick="adminDeletePost(${u.id})" class="bg-gray-500 text-white px-3 py-1 rounded hover:bg-gray-600 font-bold shadow-sm transition">게시물 삭제</button>` : ''}
+                            <button onclick="adminDeleteUser(${u.id})" class="bg-red-500 text-white px-3 py-1 rounded hover:bg-red-600 font-bold shadow-sm transition">회원 삭제</button>
+                        </td>
+                    </tr>
+                `;
+            });
+
+            contentArea.innerHTML = `
+                <div class="max-w-6xl mx-auto animate-pop pb-10">
+                    <div class="flex justify-between items-center mb-6 border-b-4 border-blue-200 pb-2">
+                        <h2 class="text-3xl font-bold text-blue-800">🛡️ 관리자 대시보드</h2>
+                    </div>
+
+                    <div class="bg-white rounded-xl shadow-md border border-gray-200 overflow-hidden">
+                        <div class="table-wrapper">
+                            <table class="w-full min-w-[950px]">
+                                <thead>
+                                    <tr class="bg-blue-50 text-blue-800 font-bold font-sans">
+                                        <th class="p-3 w-12">ID</th>
+                                        <th class="p-3 w-28">닉네임</th>
+                                        <th class="p-3 w-24">비밀번호</th>
+                                        <th class="p-3 w-28">상태</th>
+                                        <th class="p-3">관리 액션</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${usersHtml.length > 0 ? usersHtml : '<tr><td colspan="5" class="p-6 text-center text-gray-500">가입된 회원이 없습니다.</td></tr>'}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function adminApprove(userId) {
+            const user = db.users.find(u => u.id === parseInt(userId));
+            if(user) {
+                user.status = 'approved';
+                customAlert(`[${user.nickname}] 학생의 계획서를 승인했습니다.`, () => {
+                    renderAdmin();
+                });
+            }
+        }
+
+        function adminEditUser(userId) {
+            state.activeUserId = parseInt(userId);
+            state.isAdminEditing = true;
+            syncDbToState(state.activeUserId);
+            setTab('step2'); 
+        }
+
+        function exitAdminEdit() {
+            syncStateToDb(); 
+            state.activeUserId = null;
+            state.isAdminEditing = false;
+            setTab('admin');
+        }
+
+        function adminResetPw(userId) {
+            const user = db.users.find(u => u.id === parseInt(userId));
+            if(!user) return;
+            customPrompt(`[${user.nickname}] 학생의 새 비밀번호(숫자 4자리)를 입력하세요:`, (newPw) => {
+                if (newPw && /^\d{4}$/.test(newPw)) {
+                    user.password = newPw;
+                    customAlert("비밀번호가 재설정되었습니다.", () => renderAdmin());
+                } else if (newPw) {
+                    customAlert("숫자 4자리로 입력해주세요.");
+                }
+            }, "숫자 4자리", "password", 4);
+        }
+
+        function adminDeleteUser(userId) {
+            customConfirm("정말로 이 학생의 모든 정보를 삭제하시겠습니까?", () => {
+                db.users = db.users.filter(u => u.id !== parseInt(userId));
+                renderAdmin();
+            });
+        }
+
+        function adminDeletePost(userId) {
+            customConfirm("성장 그라운드에서 이 학생의 게시물을 삭제(숨김)하시겠습니까?", () => {
+                const user = db.users.find(u => u.id === parseInt(userId));
+                if(user) {
+                    user.isPublished = false;
+                    renderAdmin();
+                }
+            });
+        }
+
+        function adminSendMessage(userId) {
+            const user = db.users.find(u => u.id === parseInt(userId));
+            if(!user) return;
+            customPrompt(`[${user.nickname}] 학생에게 보낼 응원 메시지를 입력하세요:`, (msg) => {
+                if (msg && msg.trim() !== '') {
+                    if(!user.messages) user.messages = [];
+                    user.messages.unshift({ 
+                        id: Date.now(), 
+                        text: msg, 
+                        date: new Date().toLocaleString('ko-KR', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }), 
+                        isRead: false 
+                    });
+                    customAlert("메시지가 전송되었습니다.", () => {
+                        if (state.activeUserId === parseInt(userId) && state.isAdminEditing) renderNav();
+                    });
+                }
+            }, "응원 메시지를 입력하세요");
+        }
+
+        // --- 학생 메시지 확인 (모달) ---
+        function openMessageModal() {
+            const user = db.users.find(u => u.id === state.activeUserId);
+            if(!user) return;
+            if(!user.messages) user.messages = [];
+            
+            let msgHtml = '';
+            if(user.messages.length === 0) {
+                msgHtml = '<p class="text-gray-500 text-center py-8 font-sans">도착한 메시지가 없습니다.</p>';
+            } else {
+                const sortedMessages = [...user.messages].sort((a,b) => b.id - a.id);
+                sortedMessages.forEach(m => {
+                    msgHtml += `
+                        <div class="p-4 border rounded-xl mb-3 shadow-sm transition-all ${m.isRead ? 'bg-gray-50 border-gray-200' : 'bg-blue-50 border-blue-200'}">
+                            <div class="flex justify-between items-start mb-2">
+                                <span class="text-xs text-gray-500 font-sans font-bold">${m.date}</span>
+                                ${!m.isRead ? `<button onclick="markMessageRead(${m.id})" class="text-xs bg-blue-500 text-white px-3 py-1 rounded-full shadow hover:bg-blue-600 transition font-bold">읽음</button>` : '<span class="text-xs text-gray-400 font-bold">읽음</span>'}
+                            </div>
+                            <p class="text-gray-800 text-sm font-sans leading-relaxed">${m.text}</p>
+                        </div>
+                    `;
+                });
+            }
+
+            const modalHtml = `
+                <div class="bg-white w-full max-w-md rounded-2xl overflow-hidden shadow-2xl animate-pop relative flex flex-col">
+                    <div class="bg-gradient-to-r from-blue-100 to-indigo-100 p-4 flex justify-between items-center shrink-0 border-b border-blue-200">
+                        <h3 class="font-bold text-blue-900 text-lg flex items-center gap-2">💌 선생님의 응원 메시지</h3>
+                        <button onclick="closeModal()" class="w-8 h-8 bg-white/50 rounded-full font-bold text-gray-700 hover:bg-white transition flex justify-center items-center">X</button>
+                    </div>
+                    <div class="p-4 max-h-[60vh] overflow-y-auto">
+                        ${msgHtml}
+                    </div>
+                </div>
+            `;
+            modalContainer.innerHTML = modalHtml;
+            modalContainer.classList.remove('hidden');
+        }
+
+        function markMessageRead(msgId) {
+            const user = db.users.find(u => u.id === state.activeUserId);
+            if(user && user.messages) {
+                const msg = user.messages.find(m => m.id === msgId);
+                if(msg) msg.isRead = true;
+            }
+            openMessageModal(); 
+            renderNav();        
+        }
+
+
+        // --- 4. 1단계: 성장 발달 점검하기 ---
+        const questions = [
+            { id: 'q1', category: '진로', text: '좋아하는 것에 관심을 가져 자신을 알기 위해 노력합니다.' },
+            { id: 'q2', category: '진로', text: '독서, 공부를 통해 궁금한 분야를 탐색합니다.' },
+            { id: 'q3', category: '사회·정서', text: '자신의 감정을 잘 살피고 가족들과 자주 대화합니다.' },
+            { id: 'q4', category: '사회·정서', text: '다양한 친구를 사귀고 집단 활동에 참여합니다.' },
+            { id: 'q5', category: '성', text: '성에 대한 올바른 지식을 배웁니다.' },
+            { id: 'q6', category: '성', text: '자신의 신체 변화에 관심을 갖고 청결하게 관리합니다.' },
+            { id: 'q7', category: '신체', text: '편식하지 않고 골고루 먹습니다.' },
+            { id: 'q8', category: '신체', text: '꾸준히 운동하고 규칙적으로 잠에 듭니다.' }
+        ];
+
+        function renderStep1() {
+            let checklistHtml = '';
+            let currentCat = '';
+            
+            questions.forEach((q) => {
+                if (q.category !== currentCat) {
+                    checklistHtml += `<h3 class="text-xl font-bold text-green-700 mt-6 mb-2 border-b-2 border-green-200 pb-1">${q.category}</h3>`;
+                    currentCat = q.category;
+                }
+                checklistHtml += `
+                    <div class="flex flex-col md:flex-row justify-between items-start md:items-center bg-gray-50 p-3 rounded-lg mb-2 shadow-sm font-sans">
+                        <span class="text-gray-800 mb-2 md:mb-0 flex-1 pr-4">- ${q.text}</span>
+                        <div class="flex gap-2 w-full md:w-auto justify-end">
+                            <label class="cursor-pointer px-3 py-1 rounded bg-white border border-gray-300 text-sm hover:bg-green-50 transition-colors ${state.step1.scores[q.id] === 3 ? 'bg-green-100 border-green-500 font-bold' : ''}">
+                                <input type="radio" name="${q.id}" value="3" class="hidden" onchange="setScore('${q.id}', 3)" ${state.step1.scores[q.id] === 3 ? 'checked' : ''}> 매우 그렇다
+                            </label>
+                            <label class="cursor-pointer px-3 py-1 rounded bg-white border border-gray-300 text-sm hover:bg-green-50 transition-colors ${state.step1.scores[q.id] === 2 ? 'bg-green-100 border-green-500 font-bold' : ''}">
+                                <input type="radio" name="${q.id}" value="2" class="hidden" onchange="setScore('${q.id}', 2)" ${state.step1.scores[q.id] === 2 ? 'checked' : ''}> 보통이다
+                            </label>
+                            <label class="cursor-pointer px-3 py-1 rounded bg-white border border-gray-300 text-sm hover:bg-green-50 transition-colors ${state.step1.scores[q.id] === 1 ? 'bg-green-100 border-green-500 font-bold' : ''}">
+                                <input type="radio" name="${q.id}" value="1" class="hidden" onchange="setScore('${q.id}', 1)" ${state.step1.scores[q.id] === 1 ? 'checked' : ''}> 노력이 필요하다
+                            </label>
+                        </div>
+                    </div>
+                `;
+            });
+
+            let resultHtml = '';
+            if (state.step1.isSubmitted) {
+                const areas = ['진로', '사회·정서', '성', '신체'];
+                let areaButtonsHtml = `<div class="flex gap-3 justify-center mt-2 mb-4 w-full flex-wrap">`;
+                areas.forEach(area => {
+                    const isSelected = state.step1.targetArea === area;
+                    areaButtonsHtml += `
+                        <button onclick="setTargetArea('${area}')" class="px-5 py-2 rounded-full font-bold transition-all ${isSelected ? 'bg-green-500 text-white shadow-md transform scale-105 border-2 border-green-500' : 'bg-white border-2 border-gray-200 text-gray-600 hover:bg-green-50'}">${area}</button>
+                    `;
+                });
+                areaButtonsHtml += `</div>`;
+
+                resultHtml = `
+                    <div class="mt-8 p-6 bg-green-50 rounded-2xl border-2 border-green-200 animate-pop flex flex-col items-center">
+                        <h3 class="text-2xl font-bold text-green-800 mb-4">내 성장 발달 레이더</h3>
+                        <div class="w-full max-w-sm mb-6 bg-white p-4 rounded-xl shadow-sm">
+                            <canvas id="radarChart"></canvas>
+                        </div>
+                        
+                        <div class="w-full text-center font-sans">
+                            <h4 class="font-bold text-lg mb-2">💡 어떤 영역을 가장 개선하고 싶나요?</h4>
+                            ${areaButtonsHtml}
+                            <div class="mt-4 text-center">
+                                <button onclick="checkAndGoToStep2()" class="bg-blue-500 text-white font-bold py-2 px-6 rounded-lg hover:bg-blue-600 transition">
+                                    2단계 계획 세우러 가기
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            contentArea.innerHTML = `
+                <div class="max-w-4xl mx-auto animate-pop pb-10">
+                    <h2 class="text-3xl font-bold text-green-800 mb-2">1단계: 성장 발달 점검하기</h2>
+                    <p class="text-gray-600 mb-6 font-sans">자신의 생활 습관과 성장 상태를 솔직하게 점검해 봅시다.</p>
+                    
+                    <div class="bg-white rounded-xl shadow-md p-4 md:p-6 mb-6">
+                        ${checklistHtml}
+                        <div class="mt-6 text-center">
+                            <button onclick="submitStep1()" class="bg-orange-500 hover:bg-orange-600 text-white font-bold py-3 px-10 rounded-full shadow-lg transition transform hover:scale-105">
+                                제출 및 결과 보기
+                            </button>
+                        </div>
+                    </div>
+                    ${resultHtml}
+                </div>
+            `;
+
+            if (state.step1.isSubmitted) renderRadarChart();
+        }
+
+        function setScore(qId, val) {
+            state.step1.scores[qId] = val;
+            syncStateToDb();
+            renderStep1(); 
+        }
+
+        function submitStep1() {
+            const allAnswered = Object.values(state.step1.scores).every(val => val > 0);
+            if (!allAnswered) { customAlert("모든 항목을 체크해주세요!"); return; }
+            state.step1.isSubmitted = true;
+            syncStateToDb();
+            renderStep1();
+            setTimeout(() => { contentArea.scrollTo({ top: contentArea.scrollHeight, behavior: 'smooth' }); }, 100);
+        }
+
+        function checkAndGoToStep2() {
+            if (!state.step1.targetArea) {
+                customAlert("개선하고 싶은 영역을 먼저 선택해주세요!");
+                return;
+            }
+            syncStateToDb();
+            setTab('step2');
+        }
+
+        function setTargetArea(area) {
+            state.step1.targetArea = area;
+            syncStateToDb();
+            renderStep1();
+            setTimeout(() => { contentArea.scrollTo({ top: contentArea.scrollHeight, behavior: 'smooth' }); }, 100);
+        }
+
+        function renderRadarChart() {
+            const ctx = document.getElementById('radarChart').getContext('2d');
+            const scores = state.step1.scores;
+            const data = [
+                scores.q1 + scores.q2, 
+                scores.q3 + scores.q4, 
+                scores.q5 + scores.q6, 
+                scores.q7 + scores.q8  
+            ];
+            radarChartInstance = new Chart(ctx, {
                 type: 'radar',
                 data: {
-                    labels: ['수면', '식사', '운동', '미디어'],
+                    labels: ['진로', '사회·정서', '성', '신체'],
                     datasets: [{
-                        label: '나의 점수',
-                        data: [3, 3, 3, 3],
-                        backgroundColor: 'rgba(34, 197, 94, 0.2)',
-                        borderColor: '#22c55e',
+                        label: '나의 성장 지수',
+                        data: data,
+                        backgroundColor: 'rgba(34, 197, 94, 0.2)', 
+                        borderColor: 'rgba(34, 197, 94, 1)',
+                        pointBackgroundColor: 'rgba(34, 197, 94, 1)',
                         borderWidth: 2
                     }]
                 },
                 options: {
-                    scales: { r: { beginAtZero: true, max: 5, ticks: { display: false } } },
+                    scales: { r: { min: 0, max: 6, ticks: { stepSize: 2, display: false } } },
                     plugins: { legend: { display: false } }
                 }
             });
         }
 
-        window.updateChart = () => {
-            const scores = Array.from(document.querySelectorAll('.score-input')).map(s => parseInt(s.value));
-            myChart.data.datasets[0].data = scores;
-            myChart.update();
-        };
 
-        window.goToStep2 = async () => {
-            const scores = Array.from(document.querySelectorAll('.score-input')).map(s => parseInt(s.value));
-            await saveProgress({ scores: scores });
-            showView('step2');
-        };
+        // --- 5. 2단계: 계획하고 실천하기 ---
+        function renderStep2() {
+            let goalHtml = '';
+            state.step2.goals.forEach((goal, idx) => {
+                goalHtml += `
+                    <div class="flex gap-2 mb-2 w-full font-sans">
+                        <input type="text" class="flex-1 p-3 border border-gray-300 rounded-lg focus:outline-none focus:border-green-500 w-full" 
+                               placeholder="(예) 키가 클 수 있도록 생활 습관을 바꿔야겠어!" 
+                               value="${goal}"
+                               oninput="updateGoal(${idx}, this.value)">
+                        ${idx >= 1 ? `<button onclick="removeGoal(${idx})" class="px-4 bg-red-100 text-red-600 rounded-lg hover:bg-red-200 font-bold">삭제</button>` : ''}
+                    </div>
+                `;
+            });
 
-        window.finishExploration = async () => {
-            const goal = document.getElementById('goal-text').value;
-            if (!goal) return alert("목표를 입력해주세요!");
-            
-            const finalData = {
-                goal: goal,
-                completed: true,
-                scores: myChart.data.datasets[0].data
-            };
-            
-            await saveProgress(finalData);
-            renderResult(finalData);
-        };
+            let infoHtml = '';
+            state.step2.infos.forEach((info, idx) => {
+                infoHtml += `
+                    <div class="flex flex-col md:flex-row gap-2 mb-2 w-full font-sans items-center">
+                        <select class="w-full md:w-32 p-2 border border-gray-300 rounded focus:border-green-500 bg-white" onchange="updateInfoSource(${idx}, this.value)">
+                            ${['책', '인터넷 자료', '가족', '선생님', '전문가', '기타'].map(opt => `<option value="${opt}" ${info.source === opt ? 'selected' : ''}>${opt}</option>`).join('')}
+                        </select>
+                        <input type="text" class="flex-1 p-2 border border-gray-300 rounded focus:border-green-500 w-full ${info.isDefault ? 'text-gray-400' : 'text-gray-800'}" 
+                               value="${info.content}" 
+                               data-idx="${idx}"
+                               onfocus="clearDefaultInfo(this)"
+                               oninput="updateInfoContent(${idx}, this.value)">
+                        ${idx >= 2 ? `<button onclick="removeInfo(${idx})" class="px-3 py-2 bg-red-100 text-red-600 rounded hover:bg-red-200">X</button>` : ''}
+                    </div>
+                `;
+            });
 
-        function renderResult(data) {
-            document.getElementById('result-name').innerText = (data.name || "대원") + " 탐험가님";
-            document.getElementById('result-goal').innerText = data.goal;
-            nav.classList.remove('hidden');
-            showView('result');
+            let planHtml = '';
+            state.step2.plans.forEach((plan, idx) => {
+                planHtml += `
+                    <tr class="font-sans border-b text-sm md:text-base hover:bg-gray-50">
+                        <td class="p-2 min-w-[140px]">
+                            <input type="date" value="${plan.date}" class="w-full p-1 border rounded" onchange="updatePlanDate(${idx}, this.value)">
+                        </td>
+                        <td class="p-2 text-center w-12 font-bold text-gray-600">
+                            ${plan.day}
+                        </td>
+                        <td class="p-2 min-w-[140px]">
+                            <div class="flex gap-1">
+                                <select class="p-1 border rounded w-16 bg-white" onchange="updatePlanAmPm(${idx}, this.value)">
+                                    <option value="AM" ${plan.ampm === 'AM' ? 'selected' : ''}>AM</option>
+                                    <option value="PM" ${plan.ampm === 'PM' ? 'selected' : ''}>PM</option>
+                                </select>
+                                <select class="p-1 border rounded flex-1 bg-white" onchange="updatePlanTime(${idx}, this.value)">
+                                    ${Array.from({length:12}, (_, i) => i+1).map(h => `<option value="${h}" ${plan.time == h ? 'selected' : ''}>${h}시</option>`).join('')}
+                                </select>
+                            </div>
+                        </td>
+                        <td class="p-2 min-w-[200px]">
+                            <input type="text" class="w-full p-1 border rounded ${plan.isDefault ? 'text-gray-400' : 'text-gray-800'}" 
+                                   value="${plan.content}" 
+                                   onfocus="clearDefaultPlan(this, ${idx})"
+                                   oninput="updatePlanContent(${idx}, this.value)">
+                        </td>
+                        <td class="p-2 text-center w-16">
+                            <input type="checkbox" class="w-5 h-5 accent-green-500 cursor-pointer" ${plan.checked ? 'checked' : ''} onchange="updatePlanCheck(${idx}, this.checked)">
+                        </td>
+                        <td class="p-2 text-center w-10">
+                            <button onclick="removePlan(${idx})" class="text-red-400 hover:text-red-600 font-bold px-2 py-1 bg-red-50 rounded hover:bg-red-100 transition">X</button>
+                        </td>
+                    </tr>
+                `;
+            });
+
+            let reflectHtml = '';
+            state.step2.reflects.forEach((ref, idx) => {
+                reflectHtml += `
+                    <div class="flex gap-2 mb-2 w-full font-sans">
+                        <input type="text" class="flex-1 p-3 border border-gray-300 rounded focus:border-green-500 w-full ${ref.isDefault ? 'text-gray-400' : 'text-gray-800'}" 
+                               value="${ref.content}" 
+                               data-idx="${idx}"
+                               onfocus="clearDefaultReflect(this)"
+                               oninput="updateReflectContent(${idx}, this.value)">
+                        ${idx >= 2 ? `<button onclick="removeReflect(${idx})" class="px-4 bg-red-100 text-red-600 rounded hover:bg-red-200 font-bold">삭제</button>` : ''}
+                    </div>
+                `;
+            });
+
+            contentArea.innerHTML = `
+                <div class="max-w-5xl mx-auto animate-pop pb-10">
+                    <div class="flex justify-between items-end mb-4 border-b-2 border-green-200 pb-2">
+                        <h2 class="text-3xl font-bold text-green-800">2단계: 계획하고 실천하기</h2>
+                        <div class="flex gap-2" id="top-btn-container">
+                            <!-- JS로 렌더링 -->
+                        </div>
+                    </div>
+                    <p class="text-gray-600 mb-6 font-sans">성장 방법을 스스로 탐색하고 실천 계획을 세웁니다. 작성한 내용은 '성장 그라운드'에 저장됩니다!</p>
+
+                    <div class="bg-white rounded-xl shadow-sm p-5 mb-6 border border-gray-200">
+                        <div class="flex justify-between items-center mb-3">
+                            <h3 class="text-xl font-bold text-gray-800 flex items-center gap-2">
+                                <span class="bg-green-100 text-green-700 w-8 h-8 rounded-full flex items-center justify-center">1</span> 
+                                ${state.step1.targetArea ? state.step1.targetArea + ' ' : ''}목표 정하기
+                            </h3>
+                            <button onclick="addGoal()" class="text-sm bg-gray-100 hover:bg-gray-200 px-3 py-1 rounded font-bold">+ 목표 추가</button>
+                        </div>
+                        <div class="flex flex-col w-full">
+                            ${goalHtml}
+                        </div>
+                    </div>
+
+                    <div class="bg-white rounded-xl shadow-sm p-5 mb-6 border border-gray-200">
+                        <div class="flex justify-between items-center mb-3">
+                            <h3 class="text-xl font-bold text-gray-800 flex items-center gap-2"><span class="bg-green-100 text-green-700 w-8 h-8 rounded-full flex items-center justify-center">2</span> 정보 탐색하기</h3>
+                            <button onclick="addInfo()" class="text-sm bg-gray-100 hover:bg-gray-200 px-3 py-1 rounded font-bold">+ 정보 추가</button>
+                        </div>
+                        <div class="flex flex-col gap-1 w-full">
+                            ${infoHtml}
+                        </div>
+                    </div>
+
+                    <div class="bg-white rounded-xl shadow-sm p-5 mb-6 border border-gray-200">
+                        <div class="flex justify-between items-center mb-3">
+                            <h3 class="text-xl font-bold text-gray-800 flex items-center gap-2">
+                                <span class="bg-green-100 text-green-700 w-8 h-8 rounded-full flex items-center justify-center">3</span> 계획하고 실천하기
+                            </h3>
+                            <button onclick="addPlan()" class="text-sm bg-gray-100 hover:bg-gray-200 px-3 py-1 rounded font-bold">+ 일정 추가</button>
+                        </div>
+                        <div class="table-wrapper">
+                            <table class="w-full text-left border-collapse min-w-[750px]">
+                                <thead>
+                                    <tr class="bg-gray-100 font-bold text-gray-700 font-sans text-sm border-y">
+                                        <th class="p-2 border-r">날짜</th>
+                                        <th class="p-2 border-r text-center">요일</th>
+                                        <th class="p-2 border-r">시간</th>
+                                        <th class="p-2 border-r">내용</th>
+                                        <th class="p-2 text-center">실천여부</th>
+                                        <th class="p-2 w-10"></th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${planHtml}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="bg-white rounded-xl shadow-sm p-5 mb-6 border border-gray-200">
+                        <div class="flex justify-between items-center mb-3">
+                            <h3 class="text-xl font-bold text-gray-800 flex items-center gap-2"><span class="bg-green-100 text-green-700 w-8 h-8 rounded-full flex items-center justify-center">4</span> 평가 및 반영하기</h3>
+                            <button onclick="addReflect()" class="text-sm bg-gray-100 hover:bg-gray-200 px-3 py-1 rounded font-bold">+ 줄 추가</button>
+                        </div>
+                        <p class="text-sm text-gray-500 font-sans mb-3">실천한 내용을 돌아보면서 느낀 점, 개선할 점을 적어보세요.</p>
+                        <div class="flex flex-col gap-1 w-full">
+                            ${reflectHtml}
+                        </div>
+                    </div>
+
+                    <div class="mt-8 flex flex-col md:flex-row justify-center items-center gap-4 w-full" id="bottom-btn-container">
+                        <!-- JS로 렌더링 -->
+                    </div>
+                </div>
+            `;
+            updateSubmitBtnUI();
         }
 
-        // Initialize
-        initAuth();
-    </script>
+        function updateSubmitBtnUI() {
+            const topContainer = document.getElementById('top-btn-container');
+            const bottomContainer = document.getElementById('bottom-btn-container');
+            if(!topContainer || !bottomContainer) return;
 
-    <style>
-        body { font-family: 'Jua', sans-serif; background-color: #f0fdf4; }
-        .font-sans { font-family: 'Noto Sans KR', sans-serif; }
-        .glass-card { background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(10px); }
-        .animate-fadeIn { animation: fadeIn 0.4s ease-out forwards; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-    </style>
-</head>
-<body class="min-h-screen flex items-center justify-center p-4">
-
-    <div id="app-container" class="w-full max-w-2xl glass-card rounded-3xl shadow-2xl border-4 border-green-200 overflow-hidden flex flex-col h-[85vh]">
-        
-        <!-- Navigation -->
-        <nav id="main-nav" class="hidden bg-green-50 border-b-2 border-green-100 p-3 flex justify-between items-center">
-            <div class="flex items-center gap-2">
-                <span class="text-xl">🧭</span>
-                <span id="display-name" class="text-green-700 font-bold">탐험가</span>
-            </div>
-            <button onclick="location.reload()" class="text-xs bg-gray-200 px-3 py-1 rounded-full font-sans">새로고침</button>
-        </nav>
-
-        <!-- Main Content -->
-        <main id="content" class="flex-grow overflow-y-auto p-6 text-center">
+            const { isValid } = checkCompletion();
+            const user = db.users.find(u => u.id === state.activeUserId);
             
-            <!-- Loading -->
-            <div id="view-loading" class="py-20">
-                <div class="animate-bounce text-4xl">🌲</div>
-                <p class="mt-4 text-gray-400 font-sans">지도 불러오는 중...</p>
-            </div>
+            if (state.isAdminEditing) {
+                const adminBtnHtml = `<button onclick="saveStep2()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-12 rounded-full shadow-xl transition text-xl w-full max-w-[300px]">관리자 모드 저장하기 💾</button>`;
+                topContainer.innerHTML = `<button onclick="saveStep2()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg shadow transition">저장하기</button>`;
+                bottomContainer.innerHTML = adminBtnHtml;
+                return;
+            }
 
-            <!-- Intro -->
-            <div id="view-intro" class="hidden animate-fadeIn py-8">
-                <div class="text-7xl mb-6">⛺</div>
-                <h1 class="text-4xl text-green-700 mb-2">성장 발달 탐험대</h1>
-                <p class="font-sans text-gray-500 mb-8">당신의 데이터는 클라우드에 안전하게 저장됩니다.</p>
-                <div class="space-y-4 max-w-sm mx-auto">
-                    <input type="text" id="user-name" placeholder="대원 이름 입력" class="w-full p-4 rounded-2xl border-2 border-green-100 font-sans text-center outline-none focus:border-green-400">
-                    <button onclick="startExploration()" class="w-full bg-green-500 hover:bg-green-600 text-white py-4 rounded-2xl text-xl shadow-lg transition-transform active:scale-95">탐험 시작하기</button>
-                </div>
-            </div>
+            let btnHtml = `<button onclick="saveStep2()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 px-8 rounded-full shadow-xl transition text-xl flex-1 max-w-[250px] w-full">저장하기 💾</button>`;
+            
+            if (user && user.status === 'approved') {
+                btnHtml += `<button disabled class="bg-green-500 text-white font-bold py-4 px-8 rounded-full shadow-xl text-xl flex-1 max-w-[250px] w-full cursor-not-allowed">심사 완료 ✅</button>`;
+            } else if (user && user.status === 'submitted') {
+                btnHtml += `<button disabled class="bg-yellow-500 text-white font-bold py-4 px-8 rounded-full shadow-xl text-xl flex-1 max-w-[250px] w-full cursor-not-allowed">심사 대기 중 ⏳</button>`;
+            } else {
+                if(isValid) {
+                    btnHtml += `<button onclick="submitForReview()" class="bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-8 rounded-full shadow-xl transition transform hover:scale-105 text-xl flex-1 max-w-[250px] w-full">제출 및 심사받기 🚀</button>`;
+                } else {
+                    btnHtml += `<button disabled class="bg-gray-300 text-gray-500 font-bold py-4 px-8 rounded-full shadow-md text-xl flex-1 max-w-[250px] w-full cursor-not-allowed">제출 및 심사받기 🚀</button>`;
+                }
+            }
 
-            <!-- Step 1: Scores -->
-            <div id="view-step1" class="hidden animate-fadeIn">
-                <h2 class="text-2xl text-green-700 mb-4">1단계: 나의 생활 점검</h2>
-                <div class="grid grid-cols-2 gap-3 mb-6 font-sans">
-                    <div class="bg-white p-3 rounded-xl border">
-                        <label class="block text-xs mb-1">수면 (충분한가?)</label>
-                        <select class="score-input w-full p-1" onchange="updateChart()"><option value="1">1점</option><option value="3">3점</option><option value="5" selected>5점</option></select>
+            topContainer.innerHTML = `<button onclick="saveStep2()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg shadow transition">저장하기</button>`;
+            bottomContainer.innerHTML = btnHtml;
+        }
+
+        // 2단계 Data 핸들러 
+        function updateGoal(idx, val) { state.step2.goals[idx] = val; syncStateToDb(); updateSubmitBtnUI(); }
+        function addGoal() { state.step2.goals.push(''); syncStateToDb(); renderStep2(); }
+        function removeGoal(idx) { state.step2.goals.splice(idx, 1); syncStateToDb(); renderStep2(); }
+
+        function clearDefaultInfo(el) {
+            const idx = el.dataset.idx;
+            if (state.step2.infos[idx].isDefault) {
+                state.step2.infos[idx].content = ''; state.step2.infos[idx].isDefault = false;
+                el.value = ''; el.classList.remove('text-gray-400'); el.classList.add('text-gray-800'); syncStateToDb(); updateSubmitBtnUI();
+            }
+        }
+        function updateInfoSource(idx, val) { state.step2.infos[idx].source = val; syncStateToDb(); updateSubmitBtnUI(); }
+        function updateInfoContent(idx, val) { state.step2.infos[idx].content = val; syncStateToDb(); updateSubmitBtnUI(); }
+        function addInfo() { state.step2.infos.push({ source: '인터넷 자료', content: '', isDefault: false }); syncStateToDb(); renderStep2(); }
+        function removeInfo(idx) { state.step2.infos.splice(idx, 1); syncStateToDb(); renderStep2(); }
+
+        function getDayOfWeek(dateString) {
+            if(!dateString) return ''; const days = ['일', '월', '화', '수', '목', '금', '토'];
+            const d = new Date(dateString); return isNaN(d) ? '' : days[d.getDay()];
+        }
+        function updatePlanDate(idx, val) {
+            state.step2.plans[idx].date = val; state.step2.plans[idx].day = getDayOfWeek(val);
+            if (state.step2.plans[idx].isDefault) state.step2.plans[idx].isDefault = false;
+            syncStateToDb(); renderStep2();
+        }
+        function updatePlanAmPm(idx, val) { state.step2.plans[idx].ampm = val; syncStateToDb(); updateSubmitBtnUI(); }
+        function updatePlanTime(idx, val) { state.step2.plans[idx].time = val; syncStateToDb(); updateSubmitBtnUI(); }
+        function clearDefaultPlan(el, idx) {
+            if (state.step2.plans[idx].isDefault) {
+                state.step2.plans[idx].content = ''; state.step2.plans[idx].isDefault = false;
+                el.value = ''; el.classList.remove('text-gray-400'); el.classList.add('text-gray-800'); syncStateToDb(); updateSubmitBtnUI();
+            }
+        }
+        function updatePlanContent(idx, val) { state.step2.plans[idx].content = val; syncStateToDb(); updateSubmitBtnUI(); }
+        function updatePlanCheck(idx, checked) { state.step2.plans[idx].checked = checked; syncStateToDb(); updateSubmitBtnUI(); }
+        function addPlan() { state.step2.plans.push({ date: '', day: '', ampm: 'AM', time: '1', content: '', checked: false, isDefault: false }); syncStateToDb(); renderStep2(); }
+        function removePlan(idx) { state.step2.plans.splice(idx, 1); syncStateToDb(); renderStep2(); }
+
+        function clearDefaultReflect(el) {
+            const idx = el.dataset.idx;
+            if (state.step2.reflects[idx].isDefault) {
+                state.step2.reflects[idx].content = ''; state.step2.reflects[idx].isDefault = false;
+                el.value = ''; el.classList.remove('text-gray-400'); el.classList.add('text-gray-800'); syncStateToDb(); updateSubmitBtnUI();
+            }
+        }
+        function updateReflectContent(idx, val) { state.step2.reflects[idx].content = val; syncStateToDb(); updateSubmitBtnUI(); }
+        function addReflect() { state.step2.reflects.push({ content: '', isDefault: false }); syncStateToDb(); renderStep2(); }
+        function removeReflect(idx) { state.step2.reflects.splice(idx, 1); syncStateToDb(); renderStep2(); }
+
+        function saveStep2() {
+            state.step2.isSaved = true;
+            syncStateToDb();
+            
+            // 추가됨: 저장만 해도 성장 그라운드에 즉시 노출되도록 설정
+            const user = db.users.find(u => u.id === state.activeUserId);
+            if (user) user.isPublished = true;
+            
+            customAlert(`계획이 성공적으로 저장되었습니다!\n'성장 그라운드'에서 내 계획이 받은 응원을 확인해보세요!`);
+        }
+
+        function submitForReview() {
+            const { isValid, missingMsg } = checkCompletion();
+            if (isValid) {
+                state.step2.isSaved = true;
+                syncStateToDb();
+                
+                const user = db.users.find(u => u.id === state.activeUserId);
+                if (user) {
+                    user.status = 'submitted';
+                    user.isPublished = true; // 제출 시에도 무조건 게시 상태로 보장
+                }
+                
+                customAlert("선생님께 성공적으로 제출되었습니다!\n선생님의 승인이 완료될 때까지 기다려주세요.", () => {
+                    renderStep2(); 
+                });
+            } else {
+                customAlert("아직 빈칸이 남아있어요!\n\n[부족한 부분]\n- " + missingMsg.join('\n- '));
+            }
+        }
+
+        // --- 6. 3단계: 탐험 완료 ---
+        function renderStep3() {
+            contentArea.innerHTML = `
+                <div class="flex flex-col items-center justify-center h-full text-center p-4 animate-pop">
+                    <div class="text-8xl mb-6">🏆🎉</div>
+                    <h2 class="text-4xl md:text-5xl font-bold text-green-700 mb-6 leading-relaxed">
+                        축하합니다!<br>
+                        올바른 성장 발달 탐험 완료!
+                    </h2>
+                    <p class="text-xl text-gray-700 mb-10 font-sans">스스로 점검하고 멋진 계획을 세워 선생님의 승인까지 완료했습니다. <br>여러분이 정말 자랑스럽습니다.</p>
+                    
+                    <div class="flex gap-4">
+                        <button onclick="setTab('ground')" class="bg-yellow-400 hover:bg-yellow-500 text-white font-bold py-3 px-8 rounded-full shadow-lg text-lg transition">
+                            성장 그라운드 구경가기 🌟
+                        </button>
                     </div>
-                    <div class="bg-white p-3 rounded-xl border">
-                        <label class="block text-xs mb-1">영양 (골고루?)</label>
-                        <select class="score-input w-full p-1" onchange="updateChart()"><option value="1">1점</option><option value="3" selected>3점</option><option value="5">5점</option></select>
+                </div>
+            `;
+        }
+
+        // --- 7. 성장 그라운드 ---
+        function renderGround() {
+            let cardsHtml = '';
+            let visiblePosts = db.users.filter(u => u.isPublished);
+
+            let myPost = null;
+            let otherPosts = visiblePosts;
+
+            if (!state.isAdminLoggedIn && state.activeUserId) {
+                myPost = visiblePosts.find(u => u.id === state.activeUserId);
+                otherPosts = visiblePosts.filter(u => u.id !== state.activeUserId);
+            }
+
+            let displayPosts = [];
+            if (myPost) displayPosts.push(myPost);
+            displayPosts = displayPosts.concat(otherPosts);
+
+            displayPosts.forEach(item => {
+                const isMine = item.id === state.activeUserId && !state.isAdminLoggedIn;
+                
+                const cardClasses = isMine 
+                    ? "bg-yellow-50 border-2 border-yellow-400" 
+                    : "bg-white border border-gray-200";
+                    
+                const authorLabel = isMine
+                    ? `<span class="text-xs font-bold text-yellow-700 bg-yellow-200 px-2 py-1 rounded-full">⭐ 나의 계획서</span>`
+                    : `<span class="text-xs font-bold text-green-700">${item.nickname} 친구</span>`;
+
+                cardsHtml += `
+                    <div class="${cardClasses} rounded-2xl shadow-sm hover:shadow-md transition cursor-pointer flex flex-col overflow-hidden transform hover:-translate-y-1" onclick="openGroundModal(${item.id})">
+                        <div class="w-full aspect-[4/3] bg-gradient-to-br from-green-50 to-blue-50 flex items-center justify-center border-b border-gray-100">
+                            <span class="text-6xl">${item.img}</span>
+                        </div>
+                        <div class="p-3 flex-grow flex flex-col justify-between">
+                            <div>
+                                <h4 class="font-bold text-gray-800 text-sm md:text-base truncate">${item.step2.goals.join(', ') || '목표 없음'}</h4>
+                                <p class="text-xs text-gray-500 font-sans mt-1 line-clamp-2">
+                                    ${item.step2.plans.filter(p=>p.content.trim() && !p.isDefault).map(p=>p.content).join(', ') || '계획 없음'}
+                                </p>
+                            </div>
+                            <div class="flex justify-between items-center mt-3 pt-2 border-t border-gray-100">
+                                ${authorLabel}
+                                <span class="text-xs text-red-500 flex items-center gap-1">
+                                    ${item.liked ? '❤️' : '🤍'} ${item.likes}
+                                </span>
+                            </div>
+                        </div>
                     </div>
-                    <div class="bg-white p-3 rounded-xl border">
-                        <label class="block text-xs mb-1">운동 (땀나게?)</label>
-                        <select class="score-input w-full p-1" onchange="updateChart()"><option value="1">1점</option><option value="3">3점</option><option value="5">5점</option></select>
+                `;
+            });
+
+            if(displayPosts.length === 0) {
+                cardsHtml = `<div class="col-span-full text-center py-10 text-gray-500 font-sans">아직 게시된 계획서가 없습니다. 첫 번째 주인공이 되어보세요!</div>`;
+            }
+
+            contentArea.innerHTML = `
+                <div class="max-w-5xl mx-auto animate-pop pb-10">
+                    <div class="text-center mb-8">
+                        <h2 class="text-3xl md:text-4xl font-bold text-yellow-600 mb-2">🌟 성장 그라운드 🌟</h2>
+                        <p class="text-gray-600 font-sans">나와 친구들이 세운 멋진 계획을 구경하고 응원해주세요!</p>
                     </div>
-                    <div class="bg-white p-3 rounded-xl border">
-                        <label class="block text-xs mb-1">미디어 (적당히?)</label>
-                        <select class="score-input w-full p-1" onchange="updateChart()"><option value="1">1점</option><option value="3">3점</option><option value="5">5점</option></select>
+
+                    <div class="grid grid-cols-2 md:grid-cols-3 gap-4 md:gap-6">
+                        ${cardsHtml}
                     </div>
                 </div>
-                <div class="bg-white p-4 rounded-2xl mb-6 shadow-inner">
-                    <canvas id="growthChart"></canvas>
+            `;
+        }
+
+        function openGroundModal(id) {
+            const item = db.users.find(i => i.id === id);
+            if(!item) return;
+
+            const isMine = item.id === state.activeUserId && !state.isAdminLoggedIn;
+
+            let goalHtml = item.step2.goals.filter(g => g.trim() !== '').map(goal => `
+                <div class="mb-2 flex items-start text-gray-800 font-medium"><span class="mr-2">🎯</span> <span>${goal}</span></div>
+            `).join('');
+            if(!goalHtml) goalHtml = '<div class="text-gray-400">작성된 내용이 없습니다.</div>';
+
+            let infoHtml = item.step2.infos.filter(info => !info.isDefault && info.content.trim() !== '').map(info => `
+                <div class="mb-2 text-gray-800"><span class="font-bold text-green-700 bg-green-100 border border-green-200 px-2 py-0.5 rounded text-sm mr-2">${info.source}</span> ${info.content}</div>
+            `).join('');
+            if(!infoHtml) infoHtml = '<div class="text-gray-400">작성된 내용이 없습니다.</div>';
+
+            let planHtml = item.step2.plans.filter(p => !p.isDefault && p.date !== '' && p.content.trim() !== '').map(plan => `
+                <tr class="border-b bg-white hover:bg-gray-50 transition-colors">
+                    <td class="p-2 text-center text-gray-700">${plan.date}</td>
+                    <td class="p-2 text-center font-bold text-gray-600">${plan.day}</td>
+                    <td class="p-2 text-center text-gray-700 whitespace-nowrap">${plan.ampm} ${plan.time}시</td>
+                    <td class="p-2 text-gray-800 font-medium">${plan.content}</td>
+                    <td class="p-2 text-center text-xl">${plan.checked ? '✅' : '⬜'}</td>
+                </tr>
+            `).join('');
+            if(!planHtml) planHtml = '<tr><td colspan="5" class="p-4 text-center text-gray-400">작성된 계획이 없습니다.</td></tr>';
+
+            let reflectHtml = item.step2.reflects.filter(r => !r.isDefault && r.content.trim() !== '').map(ref => `
+                <div class="mb-2 flex items-start text-gray-800"><span class="mr-2">💡</span> <span>${ref.content}</span></div>
+            `).join('');
+            if(!reflectHtml) reflectHtml = '<div class="text-gray-400">작성된 내용이 없습니다.</div>';
+
+            const modalHtml = `
+                <div class="bg-gray-50 w-full max-w-4xl h-[90vh] md:h-[80vh] rounded-3xl overflow-hidden shadow-2xl animate-pop relative flex flex-col">
+                    
+                    <div class="w-full bg-gradient-to-r ${isMine ? 'from-yellow-200 to-orange-200' : 'from-green-200 to-blue-200'} p-4 flex items-center justify-between shrink-0 shadow-sm z-10">
+                        <div class="flex items-center gap-3">
+                            <div class="w-14 h-14 bg-white rounded-full flex items-center justify-center shadow-inner text-3xl">
+                                ${item.img}
+                            </div>
+                            <div>
+                                <div class="inline-block px-3 py-1 ${isMine ? 'bg-yellow-100 text-yellow-800' : 'bg-green-100 text-green-800'} rounded-full text-xs font-bold mb-1 shadow-sm">
+                                    ${isMine ? '⭐ 나의 계획서' : item.nickname + ' 친구의 계획서'}
+                                </div>
+                                <h2 class="text-xl font-bold text-gray-800 flex items-center gap-2">2단계: 계획 및 실천 기록</h2>
+                            </div>
+                        </div>
+                        <button onclick="closeModal()" class="w-10 h-10 bg-white/50 rounded-full flex items-center justify-center font-bold text-gray-700 hover:bg-white transition text-xl shadow-sm">X</button>
+                    </div>
+                    
+                    <div class="p-4 md:p-6 overflow-y-auto font-sans flex-grow">
+                        <div class="bg-white rounded-xl shadow-sm p-4 md:p-5 mb-5 border border-gray-200">
+                            <h3 class="text-lg font-bold text-gray-800 mb-3 flex items-center gap-2 border-b pb-2"><span class="bg-green-100 text-green-700 w-6 h-6 rounded-full flex items-center justify-center text-sm">1</span> ${item.step1.targetArea ? item.step1.targetArea + ' ' : ''}목표 정하기</h3>
+                            ${goalHtml}
+                        </div>
+
+                        <div class="bg-white rounded-xl shadow-sm p-4 md:p-5 mb-5 border border-gray-200">
+                            <h3 class="text-lg font-bold text-gray-800 mb-3 flex items-center gap-2 border-b pb-2"><span class="bg-green-100 text-green-700 w-6 h-6 rounded-full flex items-center justify-center text-sm">2</span> 정보 탐색하기</h3>
+                            ${infoHtml}
+                        </div>
+
+                        <div class="bg-white rounded-xl shadow-sm p-4 md:p-5 mb-5 border border-gray-200">
+                            <h3 class="text-lg font-bold text-gray-800 mb-3 flex items-center gap-2 border-b pb-2"><span class="bg-green-100 text-green-700 w-6 h-6 rounded-full flex items-center justify-center text-sm">3</span> 계획하고 실천하기</h3>
+                            <div class="table-wrapper border rounded-lg overflow-hidden">
+                                <table class="w-full text-left border-collapse min-w-[500px]">
+                                    <thead>
+                                        <tr class="bg-gray-100 font-bold text-gray-700 text-sm border-b">
+                                            <th class="p-3 text-center">날짜</th>
+                                            <th class="p-3 text-center">요일</th>
+                                            <th class="p-3 text-center">시간</th>
+                                            <th class="p-3">내용</th>
+                                            <th class="p-3 text-center">실천여부</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${planHtml}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <div class="bg-white rounded-xl shadow-sm p-4 md:p-5 mb-2 border border-gray-200">
+                            <h3 class="text-lg font-bold text-gray-800 mb-3 flex items-center gap-2 border-b pb-2"><span class="bg-green-100 text-green-700 w-6 h-6 rounded-full flex items-center justify-center text-sm">4</span> 평가 및 반영하기</h3>
+                            ${reflectHtml}
+                        </div>
+                    </div>
+
+                    <div class="p-4 bg-white border-t border-gray-200 flex justify-center shrink-0 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] z-10">
+                        <button onclick="toggleLike(${item.id}); event.stopPropagation();" class="flex items-center gap-2 px-8 py-3 rounded-full font-bold transition-all text-lg shadow-sm ${item.liked ? 'bg-red-50 text-red-600 border-2 border-red-200 transform scale-105' : 'bg-gray-100 text-gray-600 border-2 border-transparent hover:bg-gray-200'}">
+                            <span class="text-2xl">${item.liked ? '❤️' : '🤍'}</span> 
+                            <span>멋진 계획을 응원하기 (${item.likes})</span>
+                        </button>
+                    </div>
                 </div>
-                <button onclick="goToStep2()" class="w-full bg-blue-500 text-white py-4 rounded-2xl font-bold shadow-md">목표 설정하러 가기</button>
-            </div>
+            `;
 
-            <!-- Step 2: Goal -->
-            <div id="view-step2" class="hidden animate-fadeIn py-4">
-                <div class="text-5xl mb-4">🎯</div>
-                <h2 class="text-2xl text-blue-700 mb-6">2단계: 성장 목표 세우기</h2>
-                <textarea id="goal-text" class="w-full h-32 p-4 rounded-2xl border-2 font-sans mb-6 outline-none focus:border-blue-400" placeholder="예: 스마트폰을 하루 1시간만 사용하겠습니다!"></textarea>
-                <button onclick="finishExploration()" class="w-full bg-orange-500 text-white py-4 rounded-2xl font-bold shadow-md">저장 및 완료</button>
-            </div>
+            modalContainer.innerHTML = modalHtml;
+            modalContainer.classList.remove('hidden');
+        }
 
-            <!-- Result -->
-            <div id="view-result" class="hidden animate-fadeIn py-8">
-                <div class="text-7xl mb-6">🏆</div>
-                <h2 class="text-3xl text-orange-600 mb-2">성공적인 탐험!</h2>
-                <p id="result-name" class="text-xl mb-6 font-bold text-gray-700"></p>
-                <div class="bg-yellow-50 p-6 rounded-2xl border-2 border-yellow-200 text-left font-sans mb-8">
-                    <p class="text-xs text-gray-400 mb-2 font-bold uppercase tracking-widest">Saved Commitment</p>
-                    <p id="result-goal" class="text-lg text-gray-800 leading-relaxed"></p>
-                </div>
-                <p class="text-sm text-gray-400 font-sans mb-4">언제든 다시 접속하여 목표를 확인하세요.</p>
-                <button onclick="showView('step1'); initChart();" class="bg-green-100 text-green-700 px-8 py-3 rounded-full font-bold">다시 측정하기</button>
-            </div>
-        </main>
-    </div>
+        function closeModal() {
+            modalContainer.classList.add('hidden');
+            modalContainer.innerHTML = '';
+        }
 
+        function toggleLike(id) {
+            const item = db.users.find(i => i.id === id);
+            if(item) {
+                if(item.liked) {
+                    item.likes--;
+                    item.liked = false;
+                } else {
+                    item.likes++;
+                    item.liked = true;
+                }
+                openGroundModal(id);
+                if(state.currentTab === 'ground') { renderGround(); }
+            }
+        }
+
+        setTab('intro');
+
+    </script>
 </body>
 </html>
