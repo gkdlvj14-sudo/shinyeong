@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>성장 발달 탐험대 - Cloud</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Jua&family=Noto+Sans+KR:wght@400;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <!-- Firebase SDK -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Firebase Configuration (Environment Variables)
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'growth-explorer-app';
+
+        // Global State
+        let currentUser = null;
+        let myChart = null;
+
+        // UI Elements
+        const views = {
+            intro: document.getElementById('view-intro'),
+            step1: document.getElementById('view-step1'),
+            step2: document.getElementById('view-step2'),
+            result: document.getElementById('view-result'),
+            loading: document.getElementById('view-loading')
+        };
+
+        const nav = document.getElementById('main-nav');
+
+        function showView(targetId) {
+            Object.keys(views).forEach(id => {
+                views[id].classList.add('hidden');
+            });
+            views[targetId].classList.remove('hidden');
+        }
+
+        // 1. Authentication (RULE 3)
+        const initAuth = async () => {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (error) {
+                console.error("Auth Error:", error);
+            }
+        };
+
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                currentUser = user;
+                loadUserData();
+            } else {
+                showView('intro');
+            }
+        });
+
+        // 2. Data Operations (RULE 1 & 2)
+        async function loadUserData() {
+            if (!currentUser) return;
+            
+            const userDocRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'profile', 'data');
+            const docSnap = await getDoc(userDocRef);
+
+            if (docSnap.exists()) {
+                const data = docSnap.data();
+                document.getElementById('display-name').innerText = data.name || "대원";
+                document.getElementById('goal-text').value = data.goal || "";
+                
+                // If data exists, show result directly or step1
+                if (data.completed) {
+                    renderResult(data);
+                } else {
+                    showView('intro');
+                }
+            } else {
+                showView('intro');
+            }
+        }
+
+        async function saveProgress(stepData) {
+            if (!currentUser) return;
+            const userDocRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'profile', 'data');
+            await setDoc(userDocRef, {
+                ...stepData,
+                updatedAt: new Date().toISOString()
+            }, { merge: true });
+        }
+
+        // App Logic
+        window.startExploration = async () => {
+            const name = document.getElementById('user-name').value;
+            if (!name) return alert("이름을 입력해주세요!");
+            
+            await saveProgress({ name: name, completed: false });
+            nav.classList.remove('hidden');
+            document.getElementById('display-name').innerText = name;
+            showView('step1');
+            initChart();
+        };
+
+        function initChart() {
+            const ctx = document.getElementById('growthChart').getContext('2d');
+            if (myChart) myChart.destroy();
+            myChart = new Chart(ctx, {
+                type: 'radar',
+                data: {
+                    labels: ['수면', '식사', '운동', '미디어'],
+                    datasets: [{
+                        label: '나의 점수',
+                        data: [3, 3, 3, 3],
+                        backgroundColor: 'rgba(34, 197, 94, 0.2)',
+                        borderColor: '#22c55e',
+                        borderWidth: 2
+                    }]
+                },
+                options: {
+                    scales: { r: { beginAtZero: true, max: 5, ticks: { display: false } } },
+                    plugins: { legend: { display: false } }
+                }
+            });
+        }
+
+        window.updateChart = () => {
+            const scores = Array.from(document.querySelectorAll('.score-input')).map(s => parseInt(s.value));
+            myChart.data.datasets[0].data = scores;
+            myChart.update();
+        };
+
+        window.goToStep2 = async () => {
+            const scores = Array.from(document.querySelectorAll('.score-input')).map(s => parseInt(s.value));
+            await saveProgress({ scores: scores });
+            showView('step2');
+        };
+
+        window.finishExploration = async () => {
+            const goal = document.getElementById('goal-text').value;
+            if (!goal) return alert("목표를 입력해주세요!");
+            
+            const finalData = {
+                goal: goal,
+                completed: true,
+                scores: myChart.data.datasets[0].data
+            };
+            
+            await saveProgress(finalData);
+            renderResult(finalData);
+        };
+
+        function renderResult(data) {
+            document.getElementById('result-name').innerText = (data.name || "대원") + " 탐험가님";
+            document.getElementById('result-goal').innerText = data.goal;
+            nav.classList.remove('hidden');
+            showView('result');
+        }
+
+        // Initialize
+        initAuth();
+    </script>
+
+    <style>
+        body { font-family: 'Jua', sans-serif; background-color: #f0fdf4; }
+        .font-sans { font-family: 'Noto Sans KR', sans-serif; }
+        .glass-card { background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(10px); }
+        .animate-fadeIn { animation: fadeIn 0.4s ease-out forwards; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+</head>
+<body class="min-h-screen flex items-center justify-center p-4">
+
+    <div id="app-container" class="w-full max-w-2xl glass-card rounded-3xl shadow-2xl border-4 border-green-200 overflow-hidden flex flex-col h-[85vh]">
+        
+        <!-- Navigation -->
+        <nav id="main-nav" class="hidden bg-green-50 border-b-2 border-green-100 p-3 flex justify-between items-center">
+            <div class="flex items-center gap-2">
+                <span class="text-xl">🧭</span>
+                <span id="display-name" class="text-green-700 font-bold">탐험가</span>
+            </div>
+            <button onclick="location.reload()" class="text-xs bg-gray-200 px-3 py-1 rounded-full font-sans">새로고침</button>
+        </nav>
+
+        <!-- Main Content -->
+        <main id="content" class="flex-grow overflow-y-auto p-6 text-center">
+            
+            <!-- Loading -->
+            <div id="view-loading" class="py-20">
+                <div class="animate-bounce text-4xl">🌲</div>
+                <p class="mt-4 text-gray-400 font-sans">지도 불러오는 중...</p>
+            </div>
+
+            <!-- Intro -->
+            <div id="view-intro" class="hidden animate-fadeIn py-8">
+                <div class="text-7xl mb-6">⛺</div>
+                <h1 class="text-4xl text-green-700 mb-2">성장 발달 탐험대</h1>
+                <p class="font-sans text-gray-500 mb-8">당신의 데이터는 클라우드에 안전하게 저장됩니다.</p>
+                <div class="space-y-4 max-w-sm mx-auto">
+                    <input type="text" id="user-name" placeholder="대원 이름 입력" class="w-full p-4 rounded-2xl border-2 border-green-100 font-sans text-center outline-none focus:border-green-400">
+                    <button onclick="startExploration()" class="w-full bg-green-500 hover:bg-green-600 text-white py-4 rounded-2xl text-xl shadow-lg transition-transform active:scale-95">탐험 시작하기</button>
+                </div>
+            </div>
+
+            <!-- Step 1: Scores -->
+            <div id="view-step1" class="hidden animate-fadeIn">
+                <h2 class="text-2xl text-green-700 mb-4">1단계: 나의 생활 점검</h2>
+                <div class="grid grid-cols-2 gap-3 mb-6 font-sans">
+                    <div class="bg-white p-3 rounded-xl border">
+                        <label class="block text-xs mb-1">수면 (충분한가?)</label>
+                        <select class="score-input w-full p-1" onchange="updateChart()"><option value="1">1점</option><option value="3">3점</option><option value="5" selected>5점</option></select>
+                    </div>
+                    <div class="bg-white p-3 rounded-xl border">
+                        <label class="block text-xs mb-1">영양 (골고루?)</label>
+                        <select class="score-input w-full p-1" onchange="updateChart()"><option value="1">1점</option><option value="3" selected>3점</option><option value="5">5점</option></select>
+                    </div>
+                    <div class="bg-white p-3 rounded-xl border">
+                        <label class="block text-xs mb-1">운동 (땀나게?)</label>
+                        <select class="score-input w-full p-1" onchange="updateChart()"><option value="1">1점</option><option value="3">3점</option><option value="5">5점</option></select>
+                    </div>
+                    <div class="bg-white p-3 rounded-xl border">
+                        <label class="block text-xs mb-1">미디어 (적당히?)</label>
+                        <select class="score-input w-full p-1" onchange="updateChart()"><option value="1">1점</option><option value="3">3점</option><option value="5">5점</option></select>
+                    </div>
+                </div>
+                <div class="bg-white p-4 rounded-2xl mb-6 shadow-inner">
+                    <canvas id="growthChart"></canvas>
+                </div>
+                <button onclick="goToStep2()" class="w-full bg-blue-500 text-white py-4 rounded-2xl font-bold shadow-md">목표 설정하러 가기</button>
+            </div>
+
+            <!-- Step 2: Goal -->
+            <div id="view-step2" class="hidden animate-fadeIn py-4">
+                <div class="text-5xl mb-4">🎯</div>
+                <h2 class="text-2xl text-blue-700 mb-6">2단계: 성장 목표 세우기</h2>
+                <textarea id="goal-text" class="w-full h-32 p-4 rounded-2xl border-2 font-sans mb-6 outline-none focus:border-blue-400" placeholder="예: 스마트폰을 하루 1시간만 사용하겠습니다!"></textarea>
+                <button onclick="finishExploration()" class="w-full bg-orange-500 text-white py-4 rounded-2xl font-bold shadow-md">저장 및 완료</button>
+            </div>
+
+            <!-- Result -->
+            <div id="view-result" class="hidden animate-fadeIn py-8">
+                <div class="text-7xl mb-6">🏆</div>
+                <h2 class="text-3xl text-orange-600 mb-2">성공적인 탐험!</h2>
+                <p id="result-name" class="text-xl mb-6 font-bold text-gray-700"></p>
+                <div class="bg-yellow-50 p-6 rounded-2xl border-2 border-yellow-200 text-left font-sans mb-8">
+                    <p class="text-xs text-gray-400 mb-2 font-bold uppercase tracking-widest">Saved Commitment</p>
+                    <p id="result-goal" class="text-lg text-gray-800 leading-relaxed"></p>
+                </div>
+                <p class="text-sm text-gray-400 font-sans mb-4">언제든 다시 접속하여 목표를 확인하세요.</p>
+                <button onclick="showView('step1'); initChart();" class="bg-green-100 text-green-700 px-8 py-3 rounded-full font-bold">다시 측정하기</button>
+            </div>
+        </main>
+    </div>
+
+</body>
+</html>
